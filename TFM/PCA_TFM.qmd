@@ -1,0 +1,732 @@
+---
+title: "Proceso de modelizacion PCA"
+format: html
+editor: visual
+---
+
+# 0. Carga bibliotecas 
+```{r}
+library(GLCMTextures) # para sacar la matriz GLCM
+library(imager) # para cargar las imágenes
+library(tidyverse)
+library(purrr)
+library(tidymodels)
+library(readr)
+library(ggplot2)
+library(corrplot)
+library(performance)
+library(FactoMineR)
+library(factoextra)
+library(tidytext)
+library(rpart.plot)
+library(ranger)
+library(caret)
+library(pROC)
+library(car)
+library(MLmetrics)
+library(gridExtra)
+library(recipes)
+library(ggforce)
+```
+
+# 1.  PCA 
+# 1.1 Todas las categorias 
+# 1.1.1 Todas las direciones 
+```{r}
+matriz_total <- read_csv("matrices-glcm/matriz_total.csv") |> 
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_")) 
+```
+
+```{r}
+pca_PCA <-
+  PCA(matriz_total |> 
+  select(-id_img, -category, - contains("SA")), 
+  scale.unit = TRUE, ncp = 8, graph = FALSE)
+```
+
+```{r}
+# Autovalores
+autoval <- pca_PCA$eig
+autoval2 <- get_eig(pca_PCA)
+
+# Varianza explicada (autovalores)
+fviz_eig(pca_PCA, addlabels = TRUE, barfill = "#5190CE", ncp = 8,
+         xlab = "Componentes",
+         ylab = "% de varianza explicada")+#main = "Varianza explicada por componentes"
+labs(title = NULL)
+```
+
+```{r}
+pca_PCA <-
+  PCA(matriz_total |> 
+  select(-id_img, -category), 
+  scale.unit = TRUE, ncp = 3, graph = FALSE)
+```
+
+```{r}
+# autovectores (loadings)
+autovec <- pca_PCA$svd$V
+```
+
+```{r}
+# Nuevas coordenadas 
+coord <- pca_PCA$ind$coord
+```
+
+```{r}
+# Correlaciones:
+corr <- pca_PCA$var$cor
+head(corr)
+```
+
+Para poder visualizar cuáles son las variables que más contribuyen a cada una de las tres primeras componentes se va a crear un gráfico que muestre las cinco variables que más contribuyen en valor absoluto a cada una de ellas:
+```{r}
+coeficientes_df <- as.data.frame(corr[,1:3]) |> 
+  mutate(variables = names(matriz_total[3:47]))
+  
+# vamos a pasar las columnas a una sola pivot_longer
+coeficientes_df2 <- coeficientes_df |> 
+  pivot_longer(Dim.1:Dim.3, names_to = "Dim", values_to = "Coef" )
+
+# hacemos un slice_max por componente de las 5 mejores variables
+coeficientes_df2 <- coeficientes_df2 |> 
+  slice_max(order_by = abs(Coef), n = 5, by = Dim) |> 
+  mutate(Color = ifelse(Coef < 0, "negativo", "positivo"),
+         variables = factor(variables)) |> 
+  arrange(desc(abs(Coef)), by = Dim)
+
+
+# Crear el gráfico de barras facetado
+library(ggtext)
+
+ggplot(coeficientes_df2) +
+  geom_col(aes(x = reorder_within(variables, abs(Coef), Dim), y = abs(Coef), fill = Color)) +
+  facet_wrap(~Dim, ncol = 3, scales = "free_x") +
+  scale_fill_manual(values = c("positivo" = "#b5ccfe", "negativo" = "#ffc4d1")) +
+  scale_x_reordered() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  labs(title = "Métricas que más contribuyen a las componentes principales",
+       subtitle = "del PCA generado a partir de todas las direcciones",
+       x = "Métricas",
+       y = "Correlación con la componente principal",
+       fill = "Signo")
+
+```
+
+```{r}
+matriz_total_grafico <-
+  matriz_total
+
+matriz_total_rec <- recipe(matriz_total_grafico |> select(-id_img), category ~ .) |> 
+  step_normalize(all_numeric_predictors())
+
+matriz_total_rec <-
+  matriz_total_rec |> 
+  step_pca(all_numeric_predictors(), num_comp = 3,
+           prefix = "PC")
+
+pca_tidymodels <- bake(matriz_total_rec |>  prep(), new_data = NULL)
+
+ggplot(pca_tidymodels,
+       aes(x = .panel_x, y = .panel_y,
+           color = category, fill = category)) +
+    geom_point(alpha = 0.4, size = 0.7) +
+    ggforce::geom_autodensity(alpha = 0.3) +
+    ggforce::facet_matrix(vars(-category), layer.diag = 2) + 
+    scale_color_brewer(palette = "Dark2") + 
+    scale_fill_brewer(palette = "Dark2")
+```
+
+```{r}
+fviz_pca_var(pca_PCA, col.var = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+             repel = TRUE) +
+  theme_minimal() + 
+  labs(title = "Coordenadas de las variables",
+       color = "Peso")
+```
+
+```{r}
+# Contribuciones:
+weights <- pca_PCA$var$contrib
+cont_porc <- pca_PCA$var$cos2[, 1] / sum(pca_PCA$var$cos2[, 1])
+```
+
+```{r}
+# Clústers 
+fviz_pca_ind(pca_PCA,
+             geom = c("point"), 
+             col.ind = matriz_total$category,  
+             repel = TRUE,  
+             legend.title = "Demented")
+```
+
+# 1.1.2 Uma direção (direção radial)
+
+```{r}
+matriz_total <- read_csv("matrices-glcm/matriz_total.csv") |> 
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_"))
+
+matriz_total <- matriz_total |> select(- contains("SA"), - contains("correlation"))#- contains("ASM")
+```
+
+```{r}
+pca_PCA1 <-
+  PCA(matriz_total |> 
+  select(-id_img) |>
+  select(contains("r1")), 
+  scale.unit = TRUE, ncp = 8, graph = FALSE)
+```
+
+```{r}
+# Autovalores
+autoval <- pca_PCA1$eig
+autoval2 <- get_eig(pca_PCA1)
+
+# Varianza explicada (autovalores)
+fviz_eig(pca_PCA1, addlabels = TRUE, barfill = "#5190CE", ncp = 8,
+         xlab = "Componentes",
+         ylab = "% de varianza explicada") + #main = "Varianza explicada por componentes"
+  labs(title = NULL)+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank()  # Remove todas as linhas de grade
+  )
+```
+
+```{r}
+# Creacion del PCA con 3 componentes 
+pca_PCA1 <-
+  PCA(matriz_total |> 
+  select(-id_img) |>
+  select(contains("r1")), 
+  scale.unit = TRUE, ncp = 3, graph = FALSE)
+```
+
+```{r}
+# Autovectores (loadings)
+autovec <- pca_PCA1$svd$V
+```
+
+```{r}
+# Novas coordenadas 
+coord <- pca_PCA1$ind$coord
+```
+
+```{r}
+# Correlaciones
+corr <- pca_PCA1$var$cor
+head(corr)
+```
+
+```{r}
+coeficientes_df <- as.data.frame(corr[,1:3]) |> 
+  mutate(variables = names(matriz_total[10:16]))
+  
+# vamos a pasar las columnas a una sola pivot_longer
+coeficientes_df2 <- coeficientes_df |> 
+  pivot_longer(Dim.1:Dim.3, names_to = "Dim", values_to = "Coef" )
+
+# hacemos un slice_max por componente de las 5 mejores variables
+coeficientes_df2 <- coeficientes_df2 |> 
+  slice_max(order_by = abs(Coef), n = 5, by = Dim) |> 
+  mutate(Color = ifelse(Coef < 0, "negativo", "positivo"),
+         variables = factor(variables)) |> 
+  arrange(desc(abs(Coef)), by = Dim)
+
+
+ggplot(coeficientes_df2) +
+  geom_col(aes(x = reorder_within(variables, abs(Coef), Dim), y = abs(Coef), fill = Color)) +
+  facet_wrap(~Dim, ncol = 3, scales = "free_x") +
+  scale_fill_manual(values = c("positivo" = "#b5ccfe", "negativo" = "#ffc4d1")) +
+  scale_x_reordered() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        panel.grid = element_blank()) +
+   labs(x = "Métricas",
+       y = "Correlación con la componente principal",
+       fill = "Signo") #title = "Métricas que más contribuyen a las componentes principales",
+                      #subtitle = "del PCA generado a partir del dataset radial con Correlation",
+```
+
+```{r}
+matriz_total <- read_csv("matrices-glcm/matriz_total.csv") |> 
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_")) |> 
+  rename(demented = category) |> 
+  select(-contains("SA"),- contains("correlation"))#, - contains("ASM")
+
+matriz_total_grafico <-
+  matriz_total |> 
+  select(id_img, demented, contains("r1"))
+
+matriz_total_rec <- recipe(matriz_total_grafico |> select(-id_img), demented ~ .) |> 
+  step_normalize(all_numeric_predictors())
+
+matriz_total_rec <-
+  matriz_total_rec |> 
+  step_pca(all_numeric_predictors(), num_comp = 3,
+           prefix = "PC")
+
+pca_tidymodels <- bake(matriz_total_rec |>  prep(), new_data = NULL)
+
+ggplot(pca_tidymodels,
+       aes(x = .panel_x, y = .panel_y,
+           color = demented, fill = demented)) +
+    geom_point(alpha = 0.4, size = 0.7) +
+    ggforce::geom_autodensity(alpha = 0.3) +
+    ggforce::facet_matrix(vars(-demented), layer.diag = 2) + 
+    scale_color_brewer(palette = "Dark2") + 
+    scale_fill_brewer(palette = "Dark2")
+```
+
+```{r}
+# Coordenadas de las variables
+fviz_pca_var(pca_PCA1, col.var = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), 
+             repel = TRUE) +
+  theme_minimal() + 
+  labs(title = "Coordenadas de las variables",
+       color = "Peso")
+```
+
+```{r}
+# Contribuições 
+weights <- pca_PCA1$var$contrib
+cont_porc <- pca_PCA1$var$cos2[, 1] / sum(pca_PCA1$var$cos2[, 1])
+```
+
+```{r}
+# Clústers 
+fviz_pca_ind(pca_PCA1,
+             geom = c("point"), 
+             col.ind = matriz_total$demented,  
+             repel = TRUE,  
+             legend.title = "Demented")
+```
+
+```{r}
+# 1. Obtem los componentes finales
+datos_PCA <- as.data.frame(pca_PCA1$ind$coord)
+
+# 2. Junta con la variável respuesta
+datos_PCA$diagnostico <- matriz_total$demented
+```
+
+# 2. Balanceo de la poblacion (Muestreo SMOTE)
+```{r}
+
+library(smotefamily)
+library(rsample)
+
+# Seleciona datos 
+datos_PCA <- datos_PCA |> select(diagnostico,Dim.1,Dim.2,Dim.3)
+
+# Converte la variable respuesta en factor 
+datos_PCA$diagnostico <- factor(datos_PCA$diagnostico, 
+                         levels = c("non_demented","mild_demented", 
+                                     "moderate_demented","very_mild_demented"),
+                         ordered = TRUE)
+
+# Aplica el SMOTE
+df_balanced <- SMOTE(X = datos_PCA[, -1],  # Saca variable dependiente 
+                     target = datos_PCA$diagnostico, 
+                     K = 1, dup_size = 0)
+
+# Verifica la distribuicion
+table(df_balanced$data$class)
+
+# Guarda la base 
+balanced_data <- as.data.frame(df_balanced$data)
+
+# Aplica el SMOTE por la segunda vez
+df_balanced2 <- SMOTE(X = balanced_data[, -4],  # Saca variable dependiente 
+                     target = balanced_data$class, 
+                     K = 1, dup_size = 2)
+
+# Verifica la distribuicion
+table(df_balanced2$data$class)
+
+# Guarda la base 
+balanced_data2 <- as.data.frame(df_balanced2$data)
+
+# Aplica el Bootstrap
+# Conteo de la distribuicion inicial
+class_counts <- table(balanced_data2$class)
+
+# Defini la mayor clase como referencia
+max_class_size <- max(class_counts)
+
+# Aplica el bootstrap en las clases que todavia estan mas pequeñas
+set.seed(123)  
+final_PCA_data <- balanced_data2 |> 
+  group_by(class) |> 
+  group_modify(~ {
+    if (nrow(.x) < max_class_size) {
+      .x[sample(nrow(.x), max_class_size, replace = TRUE), ]  # Bootstrap
+    } else {
+      .x
+    }
+  }) |> 
+  ungroup()
+
+# Verifica la distribuicion final de las clases 
+table(final_PCA_data$class)
+```
+
+# 3. Separacion entre treino y test 
+```{r}
+# Tranforma la variable class en factor 
+final_PCA_data$class <- factor(final_PCA_data$class,
+                         levels = c("non_demented","mild_demented", 
+                                     "moderate_demented","very_mild_demented"),
+                         ordered = TRUE)
+
+# Divide los dados en treino y teste (80% treino, 20% teste)
+library(rsample)
+set.seed(6917)
+split <- initial_split(final_PCA_data, prop = 0.8, strata = class)
+
+# Conjunto de treino
+train_data <- training(split)
+
+# Conjunto de teste
+test_data <- testing(split)
+
+# Verifica la distribuicion final de las clases 
+table(train_data$class)
+table(test_data$class)
+```
+
+# 4. Modelizacion 
+## 4.1 Arbol de decision 
+```{r}
+# Cria el grid de los hiperparamaetros para el arbol de decision
+grid_tree <- expand.grid(
+  cost_complexity = c(0.001, 0.01, 0.1, 1),
+  tree_depth = c(1, 2, 3, 4),
+  min_n = c(10, 25, 50, 100)
+)
+
+set.seed(123)
+# Define la validacion cruzada (K-Fold con 3 repeticiones y 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Define el modelo de arbole de decision
+tree_model <- decision_tree(
+  cost_complexity = tune(),  
+  tree_depth = tune(),       
+  min_n = tune(),            
+  mode = "classification",            
+  engine = "rpart"                   
+)
+
+# Crea el workflow con formula
+tree_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(tree_model)
+
+# Ajusta el modelo con tuning
+tree_tuned <- tune_grid(
+  tree_workflow,                  # Modelo definido
+  resamples = cv_folds,           # Validacion cruzada
+  grid = grid_tree,               # Grid de los hiperparametros
+  metrics = metric_set(accuracy)  # Usar Acuracia como métrica de avalidacion
+)
+
+# Elije los mejores hiperparâmetros
+best_params_tree <- select_best(tree_tuned, metric = "accuracy")
+print(best_params_tree)
+
+# Ajusta el modelo final con los mejores hiperparametros
+model_final_tree <- finalize_model(tree_model, best_params_tree) |> 
+  fit(class ~ ., data = train_data)
+
+# Enseña los detalles del modelo final
+print(model_final_tree)
+
+# Enseña el arbol (melhorar, esta estranho)
+library(rpart.plot)
+rpart.plot(model_final_tree$fit,box.palette = "Blues")
+```
+```{r}
+# Define las métricas que queremos calcular
+library(yardstick)
+mis_metricas <- metric_set(accuracy, sens, spec, kap)
+
+# Función para ajustar, predecir y calcular métricas por fold
+fit_eval_fold <- function(split) {
+  train_fold <- training(split)
+  test_fold <- testing(split)
+
+  # Ajusta el modelo final en el fold de entrenamiento
+  modelo_fold <- fit(
+    finalize_model(tree_model, best_params_tree),
+    class ~ .,
+    data = train_fold
+  )
+
+  # Realiza predicciones en el fold de prueba
+  preds <- predict(modelo_fold, test_fold, type = "class") |> 
+    bind_cols(test_fold)
+
+  # Calcula las métricas
+  mis_metricas(preds, truth = class, estimate = .pred_class)
+}
+
+# Aplica para todos los folds
+resultados_cv <- map(cv_folds$splits, fit_eval_fold) |> 
+  bind_rows()
+
+# Calcula la media y la desviación estándar de las métricas
+resultados_cv |> 
+  group_by(.metric) |> 
+  summarise(
+    media = mean(.estimate),
+    sd = sd(.estimate)
+  )
+
+# Visualiza los datos de treino (analysis set) de primero split
+#analysis(cv_folds$splits[[1]])
+# Visualiza los datos de validacion (assessment set) del primero split
+#assessment(cv_folds$splits[[1]])
+```
+
+```{r}
+# Hace previsiones en el conjunto train
+predictions_tree <- predict(model_final_tree, new_data = train_data, type = "class") |> 
+  bind_cols(train_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_tree, truth = class, estimate = .pred_class)
+```
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_tree <- predict(model_final_tree, new_data = test_data, type = "class") |> 
+  bind_cols(test_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_tree, truth = class, estimate = .pred_class)
+```
+
+
+## 4.2 Randon Forest 
+```{r}
+# Carga el paquete necesários para Random Forest
+library(ranger)  
+
+# Crea el grid de hiperparametros para el Random Forest
+grid_rf <- expand.grid(
+  mtry = c(1, 3, 6),
+  trees = c(5, 10, 25, 50),
+  min_n = c(10, 25, 50, 100)
+)
+
+set.seed(123)
+# Crea la validacion cruzada (K-Fold con 3 repeticiones y 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Define el modelo Random Forest con hiperparâmetros ajustables
+rf_model <- rand_forest(
+  mtry = tune(),     # Número de variables por nodo
+  trees = tune(),    # Número de arboles
+  min_n = tune(),    # Mínimo de observaciones por nodo
+  mode = "classification",  
+  engine = "ranger"
+)
+
+# Crea el workflow con formula
+rf_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(rf_model)
+
+# Ajusta el modelo con tuning
+rf_tuned <- tune_grid(
+  rf_workflow,                   # Modelo definido
+  resamples = cv_folds,          # Validacion cruzada
+  grid = grid_rf,                # Grid de hiperparâmetros
+  metrics = metric_set(accuracy) # Usar Acurácia como métrica
+)
+
+# Elije los mejores hiperparâmetros
+best_params_rf <- select_best(rf_tuned, metric = "accuracy")
+print(best_params_rf)
+
+# Ajusta el modelo final con los mejores hiperparâmetros
+model_final_rf <- finalize_model(rf_model, best_params_rf) |> 
+  fit(class ~ ., data = train_data)
+
+# Enseña los detalles del modelo final 
+print(model_final_rf)
+```
+```{r}
+# Define las métricas que queremos calcular
+library(yardstick)
+mis_metricas <- metric_set(accuracy, sens, spec, kap)
+
+# Función para ajustar, predecir y calcular métricas por fold
+fit_eval_fold <- function(split) {
+  train_fold <- training(split)
+  test_fold <- testing(split)
+
+  # Ajusta el modelo final en el fold de entrenamiento
+  modelo_fold <- fit(
+    finalize_model(rf_model, best_params_rf),
+    class ~ .,
+    data = train_fold
+  )
+
+  # Realiza predicciones en el fold de prueba
+  preds <- predict(modelo_fold, test_fold, type = "class") |> 
+    bind_cols(test_fold)
+
+  # Calcula las métricas
+  mis_metricas(preds, truth = class, estimate = .pred_class)
+}
+
+# Aplica para todos los folds
+resultados_cv <- map(cv_folds$splits, fit_eval_fold) |> 
+  bind_rows()
+
+# Calcula la media y la desviación estándar de las métricas
+resultados_cv |> 
+  group_by(.metric) |> 
+  summarise(
+    media = mean(.estimate),
+    sd = sd(.estimate)
+  )
+
+# Visualiza los datos de treino (analysis set) de primero split
+#analysis(cv_folds$splits[[1]])
+# Visualiza los datos de validacion (assessment set) del primero split
+#assessment(cv_folds$splits[[1]])
+```
+
+```{r}
+# Hace previsiones en el conjunto train
+predictions_rf <- predict(model_final_rf, new_data = train_data, type = "class") |> 
+  bind_cols(train_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_rf, truth = class, estimate = .pred_class)
+```
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_rf <- predict(model_final_rf, new_data = test_data, type = "class") |> 
+  bind_cols(test_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_rf, truth = class, estimate = .pred_class)
+```
+
+## 4.3 Regresion logistica 
+```{r}
+# Carga el paquete nnet (necesário para regrecion multinomial)
+library(nnet)
+
+# Ajusta el modelo de Regrecion Logística Multinomial en la muestra de treino
+modelo_multinomial <- multinom(class ~ ., data = train_data)
+
+# Enseña el resumen del modelo
+summary(modelo_multinomial)
+```
+```{r}
+# Crear la validación cruzada (K-Fold con 3 repeticiones y 5 grupos)
+set.seed(123)  # Para reproducibilidad
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir el modelo de regresión logística multinomial
+modelo_log <- multinom_reg(mode = "classification") %>%
+  set_engine("nnet")
+
+# Crear un workflow
+workflow_log <- workflow() %>%
+  add_model(modelo_log) %>%
+  add_formula(class ~ .)
+
+# Evaluar el modelo con validación cruzada
+resultado_log_cv <- workflow_log %>%
+  fit_resamples(
+    resamples = cv_folds,
+    metrics = metric_set(accuracy, kap, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  )
+
+# Mostrar el resumen de métricas
+collect_metrics(resultado_log_cv)
+```
+
+```{r}
+# Hace previsiones en el conjunto train
+predictions_mm <- predict(modelo_multinomial, train_data) |> 
+  bind_cols(train_data) |>    # Junta con los datos reales
+  mutate(pred_class = ...1) |> 
+  select(-...1)
+
+# Define las métricas que queremos calcular
+mis_metricas <- metric_set(accuracy, sens, spec, kap)
+
+# Aplica todo de una vez
+mis_metricas(predictions_mm, truth = class, estimate = pred_class)
+```
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_mm <- predict(modelo_multinomial, test_data) |> 
+  bind_cols(test_data) |>    # Junta con los datos reales
+  mutate(pred_class = ...1) |> 
+  select(-...1)
+
+# Aplica todo de una vez
+mis_metricas(predictions_mm, truth = class, estimate = pred_class)
+```
+
+## KNN
+```{r}
+# Carregar pacotes necessários
+#library(tidymodels)  # Pacote principal
+#library(kknn)       # Pacote para KNN
+
+# Definir o grid de hiperparâmetros para otimizar k, distance_type e weight_type
+grid_knn <- expand.grid(
+  neighbors  = c(25, 101, 175, 251, 325, 401, 501),  # Valores ímpares para k
+  dist_power = c(0.1, 1, 2, 10, 20), # Tipos de distância c("euclidean", "manhattan", "minkowski")
+  weight_func = c("rectangular", "inv", "biweight") # Tipos de ponderação
+)
+
+# Criar validação cruzada (K-Fold com 3 repetições e 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo KNN com hiperparâmetros ajustáveis
+knn_model <- nearest_neighbor(
+  neighbors = tune(),        # Número de vizinhos (k)
+  dist_power = tune(),       # Tipo de distância (distance_type)
+  weight_func = tune(),      # Tipo de ponderação (weight_type)
+  mode = "classification",   # "regression" se for regressão
+  engine = "kknn"
+)
+
+# Criar workflow com fórmula (relacionando as variáveis preditoras com a resposta)
+knn_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(knn_model)
+
+# Ajustar o modelo com tuning
+knn_tuned <- tune_grid(
+  knn_workflow,              # Modelo definido
+  resamples = cv_folds,      # Validação cruzada
+  grid = grid_knn,               # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acurácia como métrica
+)
+
+# Escolher os melhores hiperparâmetros baseados na métrica de acurácia
+best_params_knn <- select_best(knn_tuned, metric = "accuracy")
+print(best_params_knn)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_knn <- finalize_model(knn_model, best_params_knn) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_knn)
+```
+

@@ -1,0 +1,630 @@
+---
+title: "Proceso de modelizacion VIF"
+format: html
+editor: visual
+---
+
+# 0. Carga bibliotecas y datos
+```{r}
+library(GLCMTextures)
+library(imager) 
+library(tidyverse)
+library(purrr)
+library(tidymodels)
+library(readr)
+library(ggplot2)
+library(corrplot)
+library(performance)
+library(FactoMineR)
+library(factoextra)
+```
+
+```{r}
+# Carga los datos
+matriz_total <- read_csv("matrices-glcm/matriz_total.csv")
+``` 
+# 1. Correlacion
+
+Primero, se estudiará la correlación entre las métricas de un mismo shift para identificar cuáles presentan una mayor correlación entre sí. Sabemos previamente que nuestras métricas se agrupan en tres categorías:
+
+Contraste: Contrast, Dissimilarity, Homogeneity
+Orden: ASM, Entropy
+Descriptivas: Mean, Variance, Correlation
+
+Además del promedio de la suma. Por lo tanto, se espera una mayor correlación entre las variables dentro de cada uno de estos grupos.
+
+A continuación, se analizará la correlación considerando todas las variables del conjunto de datos general. Esto significa que, además de identificar qué métricas están más correlacionadas entre sí, también será posible evaluar la correlación entre diferentes shifts. De esta forma, se podrá determinar si todos los shifts son necesarios dentro del conjunto de datos y, entre ellos, cuáles métricas presentan menor correlación.
+
+# 1.1 Todas las categorias
+# 1.1.1 Una direcion/ shift (direcion radial)
+```{r}
+# Hace la correlacion de las variables
+corr_total <- matriz_total |> 
+  select(-id_img) |>
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_")) |> 
+  mutate(category = case_when(
+    category == "non_demented" ~ 0,
+    category == "very_mild_demented" ~ 1,
+    category == "mild_demented" ~ 2,
+    category == "moderate_demented" ~ 3
+  )) |> 
+  select(contains("r1")) |> #category
+  cor()
+
+# Ordenado
+corrplot::corrplot(corr_total, tl.cex = 0.6,order = 'hclust')
+
+# Sin ordenar
+corrplot::corrplot(corr_total, tl.cex = 0.6)
+
+corr_total |> 
+  corrplot::corrplot(method = "number", tl.cex = 0.6, number.cex = 0.5, type = "lower")
+``` 
+Es posible observar los tres grupos bien diferenciados. La variable Correlation presenta una alta colinealidad con todas las demás variables. El grupo que muestra menor colinealidad con respecto a las otras variables es el de las Descriptivas (Mean, Variance, Correlation).
+
+En cuanto a la influencia sobre la variable objetivo (category), el tercer grupo es el que presenta mayor colinealidad con ella. Por lo tanto, a primera vista, se puede decir que este grupo es el que aporta los mejores resultados (desconsiderando la variable Correlation).
+
+# 1.1.2 Todas las direciones/shifts 
+```{r}
+# Hace la correlacion de las variables
+corr_total <- matriz_total |> 
+  select(-id_img) |>
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_")) |> 
+  mutate(category = case_when(
+    category == "non_demented" ~ 0,
+    category == "very_mild_demented" ~ 1,
+    category == "mild_demented" ~ 2,
+    category == "moderate_demented" ~ 3
+  )) |>  
+  select(-category ) |> 
+  cor()
+
+# Ordenado
+corrplot::corrplot(corr_total, tl.cex = 0.45,order = 'hclust')
+
+# Sin ordenar
+corrplot::corrplot(corr_total, tl.cex = 0.45)
+
+corr_total |> 
+  corrplot::corrplot(method = "number", tl.cex = 0.45, number.cex = 0.4, type = "lower")
+``` 
+Globalmente, se observa un patrón claro. Este patrón indica que no solo existen correlaciones entre las métricas, sino que también hay correlación entre las métricas de diferentes shifts.
+
+Las métricas más correlacionadas entre sí son:
+
+Contrast y Dissimilarity
+Homogeneity + ASM + Entropy
+Mean + Variance + SA
+
+Este patrón sigue, en gran medida, la división esperada de los grupos, excepto en el caso de Homogeneity, que debería estar en el Grupo 1, y SA, que originalmente se encontraba en un grupo separado.
+
+En cuanto al patrón general, el gráfico permite concluir que no importa qué shift se elija. La dirección en la que se analiza la matriz GLCM no es relevante. Las correlaciones mencionadas entre las métricas ocurren tanto dentro de un mismo shift como entre diferentes shifts. Es decir, el patrón de correlaciones entre métricas se mantiene constante, tanto dentro de un shift como entre dos shifts distintos.
+
+# 2. Estudo del VIF 
+# 2.1 Todas las categorias 
+# 2.1.1 Una direcion (radial)
+```{r}
+datos <-
+  matriz_total |> 
+  select(-id_img) |>
+  mutate(category = case_when(
+    category == "non_demented" ~ 0,
+    category == "very_mild_demented" ~ 1,
+    category == "mild_demented" ~ 2,
+    category == "moderate_demented" ~ 3
+  )) |> 
+  select(category, contains("r1")) 
+
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+
+summary(ajuste)
+``` 
+
+```{r}
+# quitamos glcm_homogeneity-c10
+datos <- 
+  datos |>
+  select(-`glcm_homogeneity-r1`)
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+# summary(ajuste)
+``` 
+
+```{r}
+# quitamos glcm_dissimilarity-c10
+datos <- 
+  datos |>
+  select(-`glcm_dissimilarity-r1`)
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+#summary(ajuste)
+```
+
+```{r}
+# quitamos glcm_variance-c10
+datos <- 
+  datos |>
+  select(-`glcm_variance-r1`)
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+#summary(ajuste)
+```
+
+```{r}
+# quitamos glcm_correlation-c10
+datos <- 
+  datos |>
+  select(-`glcm_correlation-r1`)
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+#summary(ajuste)
+``` 
+
+```{r}
+# quitamos glcm_entropy-c10
+datos <- 
+  datos |>
+  select(-`glcm_entropy-r1`)
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+#summary(ajuste)
+``` 
+
+As variáveis finais são Contrast, ASM e Mean. Cada uma pertence a um grupo, como esperado.
+
+Por enquanto, essa análise será feita considerando apenas um shift. Os resultados estão de acordo com as matrizes de correlação obtidas anteriormente. O único inconveniente é que, tanto Contrast quanto ASM apresentam uma colinearidade baixa com a variável Category.
+
+```{r}
+# Extra (Tras el análisis descriptivo)
+datos <-
+  matriz_total |> 
+  select(-id_img) |>
+  mutate(category = case_when(
+    category == "non_demented" ~ 0,
+    category == "very_mild_demented" ~ 1,
+    category == "mild_demented" ~ 2,
+    category == "moderate_demented" ~ 3
+  )) |> 
+  select(category, contains("r1")) 
+
+# selecionamos las variables 
+datos <- 
+  datos |>
+  select(category,'glcm_contrast-r1', 'glcm_entropy-r1', 'glcm_mean-r1')
+
+ajuste <- lm(data = datos, formula = category ~ .)
+check_collinearity(ajuste)
+``` 
+
+# 3. Seleção de variaveis 
+```{r}
+# Selecion de las direcion radial
+datos_dir_radial <- matriz_total |> select(category, contains("r1"))
+
+# Selecion de las variables 
+datos_final_vif <- datos_dir_radial |>  rename_with(~ str_remove(., "-r1$"),ends_with("-r1")) |> select(category,'glcm_contrast', 'glcm_entropy', 'glcm_mean')#'glcm_variance'
+``` 
+
+# 4. Balanceo de la poblacion (Muestreo SMOTE)
+```{r}
+
+library(smotefamily)
+library(rsample)
+
+# Converte la variable respuesta en factor
+datos_final_vif$category <- factor(datos_final_vif$category, 
+                         levels = c("non_demented","mild_demented", 
+                                     "moderate_demented","very_mild_demented"),
+                         ordered = TRUE)
+
+# Aplica el SMOTE
+df_balanced <- SMOTE(X = datos_final_vif[, -1],  # Saca variable dependiente 
+                     target = datos_final_vif$category, 
+                     K = 1, dup_size = 0)
+
+# Verifica la distribuicion
+table(df_balanced$data$class)
+
+# Guarda la base 
+balanced_data <- as.data.frame(df_balanced$data)
+
+# Aplica el SMOTE por la segunda vez
+df_balanced2 <- SMOTE(X = balanced_data[, -4],  # Saca variable dependiente 
+                     target = balanced_data$class, 
+                     K = 1, dup_size = 2)
+
+# Verifica la distribuicion
+table(df_balanced2$data$class)
+
+# Guarda la base 
+balanced_data2 <- as.data.frame(df_balanced2$data)
+
+# Aplica el Bootstrap
+# Conteo de la distribuicion inicial
+class_counts <- table(balanced_data2$class)
+
+# Defini la mayor clase como referencia
+max_class_size <- max(class_counts)
+
+# Aplica el bootstrap en las clases que todavia estan mas pequeñas
+set.seed(123)  
+final_data <- balanced_data2 |> 
+  group_by(class) |> 
+  group_modify(~ {
+    if (nrow(.x) < max_class_size) {
+      .x[sample(nrow(.x), max_class_size, replace = TRUE), ]  # Bootstrap
+    } else {
+      .x
+    }
+  }) |> 
+  ungroup()
+
+# Verifica la distribuicion final de las clases 
+table(final_data$class)
+```
+
+# 5. Separacion entre treino y test 
+```{r}
+# Tranforma la variable class en factor 
+final_data$class <- factor(final_data$class,
+                         levels = c("non_demented","mild_demented", 
+                                     "moderate_demented","very_mild_demented"),
+                         ordered = TRUE)
+
+# Divide los dados en treino y teste (80% treino, 20% teste)
+library(rsample)
+set.seed(6917)
+split <- initial_split(final_data, prop = 0.8, strata = class)
+
+# Conjunto de treino
+train_data <- training(split)
+
+# Conjunto de teste
+test_data <- testing(split)
+
+# Verifica la distribuicion final de las clases 
+table(train_data$class)
+table(test_data$class)
+```
+
+# 6. Modelizacion 
+## 6.1 Arbol de decision 
+```{r}
+# Cria el grid de los hiperparamaetros para el arbol de decision
+grid_tree <- expand.grid(
+  cost_complexity = c(0.001, 0.01, 0.1, 1),
+  tree_depth = c(1, 2, 3, 4),
+  min_n = c(10, 25, 50, 100)
+)
+
+set.seed(123)
+# Define la validacion cruzada (K-Fold con 3 repeticiones y 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Define el modelo de arbole de decision
+tree_model <- decision_tree(
+  cost_complexity = tune(),  
+  tree_depth = tune(),       
+  min_n = tune(),            
+  mode = "classification",            
+  engine = "rpart"                   
+)
+
+# Crea el workflow con formula
+tree_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(tree_model)
+
+# Ajusta el modelo con tuning
+tree_tuned <- tune_grid(
+  tree_workflow,                  # Modelo definido
+  resamples = cv_folds,           # Validacion cruzada
+  grid = grid_tree,               # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acuracia como métrica de avaliacion
+)
+
+# Elije los mejores hiperparâmetros
+best_params_tree <- select_best(tree_tuned, metric = "accuracy")
+print(best_params_tree)
+
+# Ajusta el modelo final con los mejores hiperparametros
+model_final_tree <- finalize_model(tree_model, best_params_tree) |> 
+  fit(class ~ ., data = train_data)
+
+# Enseña los detalles del modelo final
+print(model_final_tree)
+
+# Enseña el arbol (melhorar, esta estranho)
+library(rpart.plot)
+rpart.plot(model_final_tree$fit,box.palette = "Blues")
+```
+```{r}
+# Define las métricas que queremos calcular
+library(yardstick)
+mis_metricas <- metric_set(accuracy, sens, spec, kap)
+
+# Función para ajustar, predecir y calcular métricas por fold
+fit_eval_fold <- function(split) {
+  train_fold <- training(split)
+  test_fold <- testing(split)
+
+  # Ajusta el modelo final en el fold de entrenamiento
+  modelo_fold <- fit(
+    finalize_model(tree_model, best_params_tree),
+    class ~ .,
+    data = train_fold
+  )
+
+  # Realiza predicciones en el fold de prueba
+  preds <- predict(modelo_fold, test_fold, type = "class") |> 
+    bind_cols(test_fold)
+
+  # Calcula las métricas
+  mis_metricas(preds, truth = class, estimate = .pred_class)
+}
+
+# Aplica para todos los folds
+resultados_cv <- map(cv_folds$splits, fit_eval_fold) |> 
+  bind_rows()
+
+# Calcula la media y la desviación estándar de las métricas
+resultados_cv |> 
+  group_by(.metric) |> 
+  summarise(
+    media = mean(.estimate),
+    sd = sd(.estimate)
+  )
+
+# Visualiza los datos de treino (analysis set) de primero split
+#analysis(cv_folds$splits[[1]])
+# Visualiza los datos de validacion (assessment set) del primero split
+#assessment(cv_folds$splits[[1]])
+```
+
+```{r}
+# Hace previsiones en el conjunto train
+predictions_tree <- predict(model_final_tree, new_data = train_data, type = "class") |> 
+  bind_cols(train_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_tree, truth = class, estimate = .pred_class)
+```
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_tree <- predict(model_final_tree, new_data = test_data, type = "class") |> 
+  bind_cols(test_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_tree, truth = class, estimate = .pred_class)
+```
+
+
+## 6.2 Randon Forest 
+```{r}
+# Carga el paquete necesários para Random Forest
+library(ranger)  
+
+# Crea el grid de hiperparametros para el Random Forest
+grid_rf <- expand.grid(
+  mtry = c(1, 3, 6),
+  trees = c(5, 10, 25, 50),
+  min_n = c(10, 25, 50, 100)
+)
+
+set.seed(123)
+# Crea la validacion cruzada (K-Fold con 3 repeticiones y 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Define el modelo Random Forest con hiperparâmetros ajustables
+rf_model <- rand_forest(
+  mtry = tune(),     # Número de variables por nodo
+  trees = tune(),    # Número de arboles
+  min_n = tune(),    # Mínimo de observaciones por nodo
+  mode = "classification",  
+  engine = "ranger"
+)
+
+# Crea el workflow con formula
+rf_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(rf_model)
+
+# Ajusta el modelo con tuning
+rf_tuned <- tune_grid(
+  rf_workflow,                   # Modelo definido
+  resamples = cv_folds,          # Validacion cruzada
+  grid = grid_rf,                # Grid de los hiperparâmetros
+  metrics = metric_set(accuracy) # Usar Acurácia como métrica
+)
+
+# Elije los mejores hiperparâmetros
+best_params_rf <- select_best(rf_tuned, metric = "accuracy")
+print(best_params_rf)
+
+# Ajusta el modelo final con los mejores hiperparâmetros
+model_final_rf <- finalize_model(rf_model, best_params_rf) |> 
+  fit(class ~ ., data = train_data)
+
+# Enseña los detalles del modelo final 
+print(model_final_rf)
+```
+```{r}
+# Define las métricas que queremos calcular
+library(yardstick)
+mis_metricas <- metric_set(accuracy, sens, spec, kap)
+
+# Función para ajustar, predecir y calcular métricas por fold
+fit_eval_fold <- function(split) {
+  train_fold <- training(split)
+  test_fold <- testing(split)
+
+  # Ajusta el modelo final en el fold de entrenamiento
+  modelo_fold <- fit(
+    finalize_model(rf_model, best_params_rf),
+    class ~ .,
+    data = train_fold
+  )
+
+  # Realiza predicciones en el fold de prueba
+  preds <- predict(modelo_fold, test_fold, type = "class") |> 
+    bind_cols(test_fold)
+
+  # Calcula las métricas
+  mis_metricas(preds, truth = class, estimate = .pred_class)
+}
+
+# Aplica para todos los folds
+resultados_cv <- map(cv_folds$splits, fit_eval_fold) |> 
+  bind_rows()
+
+# Calcula la media y la desviación estándar de las métricas
+resultados_cv |> 
+  group_by(.metric) |> 
+  summarise(
+    media = mean(.estimate),
+    sd = sd(.estimate)
+  )
+
+# Visualiza los datos de treino (analysis set) de primero split
+#analysis(cv_folds$splits[[1]])
+# Visualiza los datos de validacion (assessment set) del primero split
+#assessment(cv_folds$splits[[1]])
+```
+
+```{r}
+# Hace previsiones en el conjunto train
+predictions_rf <- predict(model_final_rf, new_data = train_data, type = "class") |> 
+  bind_cols(train_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_rf, truth = class, estimate = .pred_class)
+```
+
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_rf <- predict(model_final_rf, new_data = test_data, type = "class") |> 
+  bind_cols(test_data)  # Junta con los datos reales
+
+# Aplica todo de una vez
+mis_metricas(predictions_rf, truth = class, estimate = .pred_class)
+```
+
+## 6.3 Regresion logistica 
+```{r}
+# Carga el paquete nnet (necesário para regrecion multinomial)
+library(nnet)
+
+# Ajusta el modelo de Regrecion Logística Multinomial en la muestra de treino
+modelo_multinomial <- multinom(class ~ ., data = train_data)
+
+# Enseña el resumen del modelo
+summary(modelo_multinomial)
+```
+```{r}
+# Crear la validación cruzada (K-Fold con 3 repeticiones y 5 grupos)
+set.seed(123)  # Para reproducibilidad
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir el modelo de regresión logística multinomial
+modelo_log <- multinom_reg(mode = "classification") %>%
+  set_engine("nnet")
+
+# Crear un workflow
+workflow_log <- workflow() %>%
+  add_model(modelo_log) %>%
+  add_formula(class ~ .)
+
+# Evaluar el modelo con validación cruzada
+resultado_log_cv <- workflow_log %>%
+  fit_resamples(
+    resamples = cv_folds,
+    metrics = metric_set(accuracy, kap, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  )
+
+# Mostrar el resumen de métricas
+collect_metrics(resultado_log_cv)
+```
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_mm <- predict(modelo_multinomial, train_data) |> 
+  bind_cols(train_data) |>    # Junta con los datos reales
+  mutate(pred_class = ...1) |> 
+  select(-...1)
+
+# Define las métricas que queremos calcular
+mis_metricas <- metric_set(accuracy, sens, spec, kap)
+
+# Aplica todo de una vez
+mis_metricas(predictions_mm, truth = class, estimate = pred_class)
+```
+```{r}
+# Hace previsiones en el conjunto teste
+predictions_mm <- predict(modelo_multinomial, test_data) |> 
+  bind_cols(test_data) |>    # Junta con los datos reales
+  mutate(pred_class = ...1) |> 
+  select(-...1)
+
+# Aplica todo de una vez
+mis_metricas(predictions_mm, truth = class, estimate = pred_class)
+```
+
+## KNN
+
+```{r}
+# Carregar pacotes necessários
+library(tidymodels)  # Pacote principal
+library(kknn)       # Pacote para KNN
+
+# Definir o grid de hiperparâmetros para otimizar k, distance_type e weight_type
+grid_knn <- expand.grid(
+  neighbors  = c(25, 101, 175, 251, 325, 401, 501),  # Valores ímpares para k
+  dist_power = c(0.1, 1, 2, 10, 20), # Tipos de distância c("euclidean", "manhattan", "minkowski")
+  weight_func = c("rectangular", "inv", "biweight") # Tipos de ponderação
+)
+
+# Criar validação cruzada (K-Fold com 3 repetições e 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo KNN com hiperparâmetros ajustáveis
+knn_model <- nearest_neighbor(
+  neighbors = tune(),        # Número de vizinhos (k)
+  dist_power = tune(),       # Tipo de distância (distance_type)
+  weight_func = tune(),      # Tipo de ponderação (weight_type)
+  mode = "classification",   # "regression" se for regressão
+  engine = "kknn"
+)
+
+# Criar workflow com fórmula (relacionando as variáveis preditoras com a resposta)
+knn_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(knn_model)
+
+# Ajustar o modelo com tuning
+knn_tuned <- tune_grid(
+  knn_workflow,              # Modelo definido
+  resamples = cv_folds,      # Validação cruzada
+  grid = grid_knn,               # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acurácia como métrica
+)
+
+# Escolher os melhores hiperparâmetros baseados na métrica de acurácia
+best_params_knn <- select_best(knn_tuned, metric = "accuracy")
+print(best_params_knn)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_knn <- finalize_model(knn_model, best_params_knn) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_knn)
+```
+
+
+
+
+
+
+
+

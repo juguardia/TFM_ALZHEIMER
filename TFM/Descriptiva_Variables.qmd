@@ -1,0 +1,315 @@
+---
+title: "Analisis descriptivo de las variables"
+format: html
+editor: visual
+---
+
+
+# 0. Carregar bibliotecas 
+```{r}
+library(GLCMTextures)
+library(imager) 
+library(tidyverse)
+library(purrr)
+library(tidymodels)
+library(readr)
+library(ggplot2)
+library(corrplot)
+library(performance)
+library(FactoMineR)
+library(factoextra)
+library(dplyr)
+library(tidyr)
+library(broom)
+```
+
+# 1. Teste de Kruskal-Wallis
+```{r}
+# Selecion de los datos 
+datos <- read_csv("matrices-glcm/matriz_total.csv") |> 
+  select(-id_img) |>
+  select(category, contains("r1")) |> 
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_")) |> 
+  select(-`SA-r1`) |> 
+  rename_with(~ str_remove(., "-r1"), contains("r1")) |> 
+  mutate(category = as.character(category)) 
+
+# Teste de Kruskal-Wallis
+#resultado_kw <- kruskal.test( Contrast ~ category, data = datos)
+#print(resultado_kw)
+
+# Pivota para formato longer
+datos_long <- datos |> 
+  pivot_longer(
+    cols = -category,
+    names_to  = "metric",
+    values_to = "value"
+  )
+
+# Para cada métrica, ejecuta Kruskal–Wallis y coge los resultados
+resultados_kw <- datos_long |> 
+  group_by(metric) |> 
+  nest() |> 
+  mutate(
+    kw = map(data, ~ kruskal.test(value ~ category, data = .x)),
+    tidy = map(kw, broom::tidy)
+  ) |> 
+  unnest(tidy) |> 
+  select(metric, statistic, parameter, p.value)
+
+# Print tabla con todas las metricas 
+print(resultados_kw)
+```
+
+# 2. Post-hoc de Dunn
+```{r}
+# Post-hoc de Dunn
+library(FSA)
+dunn1 <- dunnTest(contrast ~ category, data = datos, method="bonferroni")
+dunn2 <- dunnTest(dissimilarity ~ category, data = datos, method="bonferroni")
+dunn3<- dunnTest(homogeneity ~ category, data = datos, method="bonferroni")
+dunn4 <- dunnTest(ASM ~ category, data = datos, method="bonferroni")
+dunn5 <- dunnTest(entropy ~ category, data = datos, method="bonferroni")
+dunn6 <- dunnTest(mean ~ category, data = datos, method="bonferroni")
+dunn7 <- dunnTest(variance ~ category, data = datos, method="bonferroni")
+dunn8 <- dunnTest(correlation ~ category, data = datos, method="bonferroni")
+
+print(dunn1)
+print(dunn2)
+print(dunn3)
+print(dunn4)
+print(dunn5)
+print(dunn6)
+print(dunn7)
+print(dunn8)
+```
+# 3. IV
+```{r}
+#install.packages("Information")
+library(Information)
+
+# Loop para calcular IV para cada clase contra las restantes
+clases <- unique(datos$category)
+iv_resultados <- list()
+
+for (clase in clases) {
+  datos_temp <- datos
+  datos_temp$target_bin <- ifelse(datos_temp$category == classe, 1, 0)
+  
+  iv_table <- create_infotables(data = datos_temp, y = "target_bin", parallel = FALSE)
+  iv_resultados[[clase]] <- iv_table$Summary
+}
+
+iv_resultados[["non_demented"]]
+iv_resultados[["moderate_demented"]]
+iv_resultados[["very_mild_demented"]]
+iv_resultados[["mild_demented"]]
+```
+
+## 4. Estudio descriptivo de los datasets
+
+```{r}
+matriz_r1 <- read_csv("matrices-glcm/matriz_total.csv") |> 
+  select(-id_img) |>
+  select(category, contains("r1")) |> 
+  rename_with(~ str_remove(., "^glcm_"), starts_with("glcm_")) |> 
+  select(-`SA-r1`) |> 
+  rename_with(~ str_remove(., "-r1"), contains("r1")) |> 
+  mutate(category = as.character(category)) 
+
+
+matriz_r1 <- matriz_r1 |> 
+  pivot_longer(`contrast`:`correlation`, names_to = "Metricas", values_to = "value_metrica") |> 
+  mutate(Metricas = as_factor(Metricas)) 
+
+```
+
+```{r}
+
+paleta <- c("#AED6F1", "#5DADE2", "#2471A3", "#1B4F72")
+
+#CONTRAST
+
+ggplot(matriz_r1 |> filter(Metricas == "contrast"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) +  
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor", fill = "Métrica") + #title = "Variable Contrast desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL) 
+
+```
+
+```{r}
+#DISSIMILARITY
+
+ggplot(matriz_r1 |> filter(Metricas == "dissimilarity"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) +  # Add geom_boxplot
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor", fill = "Métrica") + #title = "Variable Dissimilarity desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+```{r}
+#HOMOGENEITY
+
+ggplot(matriz_r1 |> filter(Metricas == "homogeneity"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) +  
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor", fill = "Métrica") +#title = "Variable Homogeneity desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+```{r}
+#ASM
+
+ggplot(matriz_r1 |> filter(Metricas == "ASM"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) + 
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor", fill = "Métrica") + #title = "Variable ASM desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+```{r}
+#Entropy
+
+ggplot(matriz_r1 |> filter(Metricas == "entropy"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) + 
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor", fill = "Métrica") + #title = "Variable Entropy desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+```{r}
+#Mean
+
+ggplot(matriz_r1 |> filter(Metricas == "mean"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) +  
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor", fill = "Métrica") + #title = "Variable Mean desagregada por categoría de demencia"
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+```{r}
+# Variance
+
+ggplot(matriz_r1 |> filter(Metricas == "variance"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) +  
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor",fill = "Métrica") + #title = "Variable Variance desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+```{r}
+# Correlation
+
+ggplot(matriz_r1 |> filter(Metricas == "correlation"), aes(x = Metricas, y = value_metrica, fill = category)) +
+  geom_boxplot(alpha = 0.9, size = 0.7, width = 0.4, notch = TRUE, outlier.alpha = 0) +  
+  geom_jitter(aes(color = category), alpha = 0.2, size = 0.9, width = 0.2) +
+  geom_violin( aes(color = category),
+    alpha = 0.2, size = 0.4
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(1,1,1,1), "cm"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
+        strip.text = element_text(size = 13)) +
+  scale_color_manual(values = paleta) +
+  scale_fill_manual(values = paleta) +
+  labs(x = "Valor",fill = "Métrica") + #title = "Variable Correlation desagregada por categoría de demencia",
+  facet_wrap(~category) +
+  scale_x_discrete(breaks = NULL)
+```
+
+

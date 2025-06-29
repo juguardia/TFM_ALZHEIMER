@@ -1,0 +1,541 @@
+---
+title: "TFM"
+format: html
+editor: visual
+---
+
+```{r}
+# Cargar librerias 
+library(tidyverse)
+library(tidyr)
+library(readxl)
+library(readr)
+library(smotefamily)
+library(rsample)
+library(class)
+library(caret)
+library(corrplot)
+library(dplyr)
+library(car)
+library(MLmetrics)
+library(tidymodels) # arbol de decision 
+```
+
+```{r}
+# Cargar datos ya tratados en formato tidy y con glcm 
+matriz_total_tidy <- read_csv("matrices-glcm/matriz_total_tidy.csv")
+```
+
+## Balanceo de la poblacion 
+Aunque esta etapa no sea necesaria para algoritimos como XGBOOST, como para los demás algoritmos que usaremos a nivel de comparacion si que se veen afectados por el desbalanceo de la poblacion, en primer lugar hacemos un balanceo de la poblacion. Para eso haciemos el uso de la tecnica Smote, que crea nuevas muestras para las categorias con menor volumen hasta llegar a un volumen similar para todas las categorias. 
+Es importante constar que hemos pensado en hacer una muestra boostrap pero como habian clases muy desbalanceadas, el 
+
+# Muestreo SMOTE
+```{r}
+
+# Converter variables categóricas em variables numericas
+categorias <- unique(matriz_total_tidy$category)  
+matriz_total_tidy$category_numeric <- match(matriz_total_tidy$category, categorias)
+
+matriz_total_tidy_select <- matriz_total_tidy |> 
+  dplyr::select("glcm_contrast",      "glcm_dissimilarity","glcm_homogeneity","glcm_ASM","glcm_entropy","glcm_mean",         
+"glcm_variance","glcm_correlation","glcm_SA","category_numeric")
+
+# Converter a variável alvo em fator
+matriz_total_tidy_select$category_numeric <- as.factor(matriz_total_tidy_select$category_numeric)
+
+# Aplicar SMOTE
+df_balanced <- SMOTE(X = matriz_total_tidy_select[, -10],  # Saca variable dependiente 
+                     target = matriz_total_tidy_select$category_numeric, 
+                     K = 1, dup_size = 40)
+
+# Verificar a distribuição
+table(df_balanced$data$class)
+
+# Guarda base 
+balanced_data <- as.data.frame(df_balanced$data)
+
+
+
+# Aplicar SMOTE
+df_balanced2 <- SMOTE(X = balanced_data[, -10],  # Saca variable dependiente 
+                     target = balanced_data$class, 
+                     K = 1, dup_size = 2)
+
+# Verificar a distribuição
+table(df_balanced2$data$class)
+
+# Guarda base 
+balanced_data2 <- as.data.frame(df_balanced2$data)
+
+# Aplica Bootstrap
+# Contar distribuição inicial
+class_counts <- table(balanced_data2$class)
+
+# Definir a maior classe como referência
+max_class_size <- max(class_counts)
+
+# Aplicar bootstrap nas classes que ainda estão menores
+set.seed(123)  # Garantir reprodutibilidade
+final_data <- balanced_data2 |> 
+  group_by(class) |> 
+  group_modify(~ {
+    if (nrow(.x) < max_class_size) {
+      .x[sample(nrow(.x), max_class_size, replace = TRUE), ]  # Bootstrap
+    } else {
+      .x
+    }
+  }) |> 
+  ungroup()
+
+# Verificar distribuição final
+table(final_data$class)
+```
+
+# Separacion entre treino y test 
+```{r}
+# Carregando o pacote rsample
+library(rsample)
+
+final_data$class <- as.factor(final_data$class)
+final_data$classc <- final_data$class
+levels(final_data$classc) <- make.names(levels(final_data$classc))
+
+# Dividindo os dados em treino e teste (70% treino, 30% teste)
+set.seed(6917)
+split <- initial_split(final_data, prop = 0.8)
+
+# Conjunto de treino
+train_data <- training(split)
+
+# Conjunto de teste
+test_data <- testing(split)
+```
+
+# SELECION DE VARIABLES (EN LA MUESTRA TRAIN)
+
+## CORRELACION
+```{r}
+# Selecionar apenas variáveis numéricas do conjunto de treino
+numericas <- select_if(train_data, is.numeric)
+
+# Criar a matriz de correlação de Pearson
+cor_matrix <- cor(numericas, method = "pearson", use = "complete.obs")
+
+# Exibir a matriz numericamente
+print(cor_matrix)
+
+# Visualizar a matriz de correlação
+corrplot(cor_matrix, method = "circle", type = "upper", tl.cex = 0.7, tl.col = "black")
+
+# Encontrar variáveis altamente correlacionadas (cor > 0.9)
+variaveis_remover <- findCorrelation(cor_matrix, cutoff = 0.6)
+
+# Remover essas variáveis do conjunto de dados
+var_train_filtrado <- numericas[, -variaveis_remover]
+
+train_filtrado <- cbind(var_train_filtrado, class = train_data$class)
+```
+El análisis de la matriz de correlación radial revela la existencia de tres grupos de métricas
+con alta correlación entre sí:
+correlacion, contrast y dissimi
+Grupo 1: Contrast, Dissimilarity.
+Grupo 2: Homogeneity, ASM, Entropy.
+Grupo 3: Mean, Variance, sa.
+Estos grupos se pueden visualizar en la Figura 4.1. Además, se ha observado que las
+variables SA y Mean presentan una correlación de 1 (se comprobó que SA era igual al doble
+de Mean). Debido a esta relación directa, se decide eliminar la variable SA del análisis, ya
+que no aporta información adicional independiente y su presencia introduciría colinealidad
+en los modelos
+
+Un aspecto adicional a considerar en ambas figuras es la variable Correlation, que muestra
+una alta correlación con todas las demás métricas en todas las direcciones. Esta situación
+indica que la variable Correlation podría no ser útil para el análisis debido a su redundancia,
+y su inclusión podría complicar los modelos sin aportar información nueva. Por lo tanto, se
+plantea la posibilidad de eliminar la variable Correlation del conjunto de datos para evitar
+problemas de colinealidad y simplificar el modelo
+
+```{r}
+# Ajustar os dados (remover variáveis que não serão usadas no modelo)
+train_filter <- train_data |>  
+  select(-glcm_SA, -classc, -glcm_correlation)  # Remover variáveis que não serão usadas no modelo
+
+library(nnet)   # Para regressão logística multinomial
+library(car)    # Para calcular o VIF
+library(dplyr)  # Para manipulação de dados
+
+# Ajustar um modelo de regressão logística multinomial
+model <- multinom(class ~ ., data = train_filter)
+
+# Calcular o VIF para o modelo ajustado
+library(car)  # Pacote para calcular o VIF
+vif_result <- vif(model)
+
+# Exibir o VIF
+print(vif_result)
+
+# Remover variáveis com VIF > 5 ou 10 (dependendo do critério)
+while (max(vif_result) > 5) {
+  # Identificar a variável com maior VIF
+  variable_to_remove <- names(vif_result)[which.max(vif_result)]
+  print(paste("Removendo a variável", variable_to_remove, "com VIF =", max(vif_result)))
+  
+  # Remover a variável com o maior VIF
+  train_filter <- train_filter[, !names(train_filter) %in% variable_to_remove]
+  
+  # Ajustar o modelo novamente
+  model <- multinom(class ~ ., data = train_filter)
+  
+  # Recalcular o VIF
+  vif_result <- vif(model)
+}
+
+# Exibir o VIF final
+print(vif_result)
+```
+
+## VIF 
+```{r}
+#train_filtrado$class <- as.numeric(as.character(train_filtrado$class))
+train_filter$class <- as.numeric(as.character(train_filter$class))
+
+# Ajustar um modelo de regressão para calcular o VIF
+modelo <- lm(class ~ ., data = train_filter)  # Substitua pela sua variável resposta
+
+# Calcular o VIF
+vif_resultados <- vif(modelo)
+
+# xibir os resultados
+print(vif_resultados)
+```
+
+## PCA
+
+Aunque los algoritmos KNN, árbol de decisión y Random Forest no necesiten una preselección de variables, ya que manejan bien la colinealidad y realizan una selección implícita, optaremos por llevar a cabo esta etapa. Esto se justifica porque al reducir el número de variables, podemos mejorar la interpretación del modelo, facilitando la comprensión de las influencias de cada variable. Además, la preselección puede mejorar la eficiencia computacional, reducir el tiempo de entrenamiento y ayudar a evitar el overfitting, haciendo que el modelo sea más robusto. Por lo tanto, incluso con la capacidad de los algoritmos para seleccionar variables y considerando que el conjunto de datos tiene solo 9 variables, la preselección sigue aportando beneficios en términos de rendimiento e interpretación.
+
+```{r}
+# Passo 1: Padronizar los datos 
+# Excluir la variáble dependiente alvo ('category_numeric') 
+pca_data <- train_data |> 
+  select(glcm_contrast, glcm_dissimilarity, glcm_homogeneity, glcm_ASM, 
+         glcm_entropy, glcm_mean, glcm_variance, glcm_correlation, glcm_SA) |> 
+  scale()  
+
+# Passo 3: Aplicar el PCA
+pca_result <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+
+# Passo 4: Verificar la variabilidad explicada por los componentes principales
+summary(pca_result)
+
+# Proporcion de la variabilidad explicada para cada componente
+pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+# Passo 5: Identificar las variables mas importantes 
+pca_result$rotation  # Las contribuiciones de las variables a los PCs
+```
+
+## KNN
+
+```{r}
+train_data <- train_data |>  
+  select(class, glcm_contrast, glcm_ASM, glcm_mean) 
+```
+
+```{r}
+# Carregar pacotes necessários
+library(tidymodels)  # Pacote principal
+library(kknn)       # Pacote para KNN
+
+# Definir o grid de hiperparâmetros para otimizar k, distance_type e weight_type
+grid_knn <- expand.grid(
+  neighbors  = seq(1, 20, by = 2),  # Valores ímpares para k
+  dist_power = c(1,2,3), # Tipos de distância c("euclidean", "manhattan", "minkowski")
+  weight_func = c("rectangular", "inverse", "biweight") # Tipos de ponderação
+)
+
+# Criar validação cruzada (K-Fold com 3 repetições e 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo KNN com hiperparâmetros ajustáveis
+knn_model <- nearest_neighbor(
+  neighbors = tune(),        # Número de vizinhos (k)
+  dist_power = tune(),       # Tipo de distância (distance_type)
+  weight_func = tune(),      # Tipo de ponderação (weight_type)
+  mode = "classification",   # "regression" se for regressão
+  engine = "kknn"
+)
+
+# Criar workflow com fórmula (relacionando as variáveis preditoras com a resposta)
+knn_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(knn_model)
+
+# Ajustar o modelo com tuning
+knn_tuned <- tune_grid(
+  knn_workflow,              # Modelo definido
+  resamples = cv_folds,      # Validação cruzada
+  grid = grid_knn,               # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acurácia como métrica
+)
+
+# Escolher os melhores hiperparâmetros baseados na métrica de acurácia
+best_params_knn <- select_best(knn_tuned, metric = "accuracy")
+print(best_params_knn)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_knn <- finalize_model(knn_model, best_params_knn) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_knn)
+```
+
+
+
+## Arbol de decision 
+
+```{r}
+# Criar grid de hiperparâmetros
+grid_tree <- grid_regular(
+  cost_complexity(range = c(0.001, 0.1)), # complexidade da arvore 
+  tree_depth(range = c(2, 10)), # profundidade da arvore 
+  min_n(range = c(5, 50)) # numero minimo de 
+)
+
+# Definir validação cruzada
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo de árvore de decisão
+tree_model <- decision_tree(
+  cost_complexity = tune(),  # Hiperparâmetros a serem ajustados
+  tree_depth = tune(),       
+  min_n = tune(),            
+  mode = "classification",            
+  engine = "rpart"                   
+)
+
+tree_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(tree_model)
+
+# Ajustar o modelo com tuning
+tree_tuned <- tune_grid(
+  tree_workflow,                  # Modelo definido
+  resamples = cv_folds,           # Validação cruzada
+  grid = grid_tree,               # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acuracia como métrica de avaliação
+)
+
+# Mostrar os melhores hiperparâmetros (melhorar)
+best_params_tree <- select_best(tree_tuned, metric = "accuracy")
+print(best_params_tree)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_tree <- finalize_model(tree_model, best_params_tree) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_tree)
+
+# Visualizar a árvore (melhorar, esta estranho)
+library(rpart.plot)
+rpart.plot(model_final_tree$fit,box.palette = "Blues")
+```
+
+Accuracy (o tasa de acierto), Sensibilidad, Especificidad, área bajo la
+curva ROC (de Receiver Operating Characteristic) y el coeficiente kappa.
+
+## Randon Forest 
+
+```{r}
+
+# Carregar pacotes necessários
+library(ranger)  # Motor para Random Forest
+
+# Criar grid de hiperparâmetros para Random Forest
+grid_rf <- grid_regular(
+  mtry(range = c(2, 10)),            # Número de variáveis aleatórias por nó
+  trees(range = c(50, 500)),         # Número de árvores
+  min_n(range = c(2, 20))            # Mínimo de observações por nó
+)
+
+# Criar validação cruzada (K-Fold com 3 repetições e 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo Random Forest com hiperparâmetros ajustáveis
+rf_model <- rand_forest(
+  mtry = tune(),     # Número de variáveis por nó
+  trees = tune(),    # Número de árvores
+  min_n = tune(),    # Mínimo de observações por nó
+  mode = "classification",  
+  engine = "ranger"
+)
+
+# Criar workflow com fórmula
+rf_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(rf_model)
+
+# Ajustar o modelo com tuning
+rf_tuned <- tune_grid(
+  rf_workflow,                # Modelo definido
+  resamples = cv_folds,       # Validação cruzada
+  grid = grid_rf,                # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acurácia como métrica
+)
+
+# Escolher os melhores hiperparâmetros
+best_params_rf <- select_best(rf_tuned, metric = "accuracy")
+print(best_params_rf)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_rf <- finalize_model(rf_model, best_params_rf) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_rf)
+
+```
+
+## XGBOOST 
+
+```{r}
+# Carregar pacotes necessários
+library(tidymodels)
+library(xgboost)
+
+# Criar grid de hiperparâmetros para XGBoost
+grid_xgb <- grid_regular(
+  trees(range = c(50, 500)),       # Número de árvores
+  learn_rate(range = c(0.01, 0.3)), # Taxa de aprendizado
+  min_n(range = c(2, 20))           # Mínimo de observações por nó
+)
+
+# Criar validação cruzada (K-Fold com 3 repetições e 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo XGBoost com hiperparâmetros ajustáveis
+xgb_model <- boost_tree(
+  trees = tune(),       # Número de árvores
+  learn_rate = tune(),  # Taxa de aprendizado
+  min_n = tune(),       # Mínimo de observações por nó
+  mode = "classification",  
+  engine = "xgboost"
+)
+
+# Criar workflow com fórmula
+xgb_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(xgb_model)
+
+# Ajustar o modelo com tuning
+xgb_tuned <- tune_grid(
+  xgb_workflow,               # Modelo definido
+  resamples = cv_folds,       # Validação cruzada
+  grid = grid_xgb,                # Grid de hiperparâmetros
+  metrics = metric_set(accuracy)  # Usar Acurácia como métrica
+)
+
+# Escolher os melhores hiperparâmetros
+best_params_xgb <- select_best(xgb_tuned, metric = "accuracy")
+print(best_params_xgb)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_xgb <- finalize_model(xgb_model, best_params_xgb) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_xgb)
+```
+
+```{r}
+# xgboost
+hongo$modelo_01 <- xgboost(data = hongo$train_mat, 
+                           objective = "binary:logistic",
+                           nrounds = 10, max.depth = 2, eta = 0.3, nthread = 2)
+```
+
+## Regresion logistica 
+
+```{r}
+# Carregar o pacote nnet (necessário para regressão multinomial)
+library(nnet)
+
+# Ajustar o modelo de Regressão Logística Multinomial na amostra de treino
+modelo_multinomial <- multinom(class ~ ., data = train_data)
+
+# Exibir o resumo do modelo
+summary(modelo_multinomial)
+```
+
+# obs: usar la validación cruzada o optuna para la optimizacion ? 
+# obs: matriz_total_tidy diferencia de la matrz_total
+# obs: 
+
+## XGBOOST 
+
+```{r}
+# Carregar pacotes necessários
+library(tidymodels)
+library(xgboost)
+
+# Criar grid de hiperparâmetros para XGBoost
+grid_xgb <- grid_regular(
+  trees(range = c(50, 500)),       # Número de árvores
+  learn_rate(range = c(0.01, 0.3)), # Taxa de aprendizado
+  min_n(range = c(2, 20))           # Mínimo de observações por nó
+)
+
+# Criar validação cruzada (K-Fold com 3 repetições e 5 grupos)
+cv_folds <- vfold_cv(train_data, v = 5, repeats = 3)
+
+# Definir o modelo XGBoost com hiperparâmetros ajustáveis
+xgb_model <- boost_tree(
+  trees = tune(),       # Número de árvores
+  learn_rate = tune(),  # Taxa de aprendizado
+  min_n = tune(),       # Mínimo de observações por nó
+  mode = "classification",  
+  engine = "xgboost"
+)
+
+# Criar workflow com fórmula
+xgb_workflow <- workflow() |> 
+  add_formula(class ~ .) |> 
+  add_model(xgb_model)
+
+# Ajustar o modelo com tuning
+xgb_tuned <- tune_grid(
+  xgb_workflow,               # Modelo definido
+  resamples = cv_folds,       # Validação cruzada
+  grid = grid_xgb,                # Grid de hiperparâmetros
+  metrics = metric_set(accuracy),  # Usar Acurácia como métrica
+  control = control_grid(save_pred = TRUE)  # Salvar as previsões
+)
+
+# Verifique a classe das previsões e da variável de resposta
+str(xgb_tuned)
+
+# Garantir que as predições são do tipo 'factor'
+xgb_tuned$.pred_class <- factor(xgb_tuned$.pred_class)
+
+# Certificar-se de que a classe da variável de resposta também seja 'factor'
+xgb_tuned$.actual_class <- factor(xgb_tuned$.actual_class)
+# Escolher os melhores hiperparâmetros
+best_params_xgb <- select_best(xgb_tuned, metric = "accuracy")
+print(best_params_xgb)
+
+# Ajustar o modelo final com os melhores hiperparâmetros
+model_final_xgb <- finalize_model(xgb_model, best_params_xgb) |> 
+  fit(class ~ ., data = train_data)
+
+# Mostrar os detalhes do modelo final
+print(model_final_xgb)
+```
+
+```{r}
+# xgboost
+hongo$modelo_01 <- xgboost(data = hongo$train_mat, 
+                           objective = "binary:logistic",
+                           nrounds = 10, max.depth = 2, eta = 0.3, nthread = 2)
+```
+
